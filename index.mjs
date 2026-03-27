@@ -27,7 +27,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // Store config in ~/.claude/ so it persists across npx/marketplace reinstalls
 const CONFIG_PATH = join(process.env.HOME || process.env.USERPROFILE || __dirname, ".claude", "voice-config.json");
 
-const API_KEY = process.env.ELEVENLABS_API_KEY;
+let API_KEY = process.env.ELEVENLABS_API_KEY;
 const MODEL_ID = process.env.ELEVENLABS_MODEL_ID || "eleven_multilingual_v2";
 
 // Voice library — name -> ElevenLabs voice ID
@@ -61,11 +61,6 @@ const DEFAULT_CONFIG = {
 
 const DEFAULT_VOICE_ID = process.env.ELEVENLABS_VOICE_ID || VOICES[DEFAULT_CONFIG.voices.default];
 
-if (!API_KEY) {
-  console.error("mcp-tts: ELEVENLABS_API_KEY required as env var");
-  process.exit(1);
-}
-
 // ── Voice config ────────────────────────────────────────────────────────
 
 let _cachedConfig = null;
@@ -77,6 +72,10 @@ async function loadConfig() {
     _cachedConfig = { ...DEFAULT_CONFIG, ...JSON.parse(raw) };
   } catch {
     _cachedConfig = { ...DEFAULT_CONFIG };
+  }
+  // Use API key from config as fallback if env var not set
+  if (!API_KEY && _cachedConfig.apiKey) {
+    API_KEY = _cachedConfig.apiKey;
   }
   return _cachedConfig;
 }
@@ -232,17 +231,50 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ["config"],
       },
     },
+    {
+      name: "setup_tts",
+      description: "First-time setup: store your ElevenLabs API key. Required before speak will work. Get a key at https://elevenlabs.io",
+      inputSchema: {
+        type: "object",
+        properties: {
+          api_key: {
+            type: "string",
+            description: "Your ElevenLabs API key (starts with sk_)",
+          },
+        },
+        required: ["api_key"],
+      },
+    },
   ],
 }));
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const toolName = request.params.name;
 
+  // ── setup_tts ──
+  if (toolName === "setup_tts") {
+    const { api_key } = request.params.arguments ?? {};
+    if (!api_key || typeof api_key !== "string" || !api_key.startsWith("sk_")) {
+      return {
+        content: [{ type: "text", text: "Invalid API key. Must be a string starting with sk_. Get one at https://elevenlabs.io" }],
+        isError: true,
+      };
+    }
+    const config = await loadConfig();
+    config.apiKey = api_key;
+    await saveConfig(config);
+    API_KEY = api_key;
+    return {
+      content: [{ type: "text", text: JSON.stringify({ success: true, message: "API key saved. TTS is ready to use." }) }],
+    };
+  }
+
   // ── get_voice_config ──
   if (toolName === "get_voice_config") {
     const config = await loadConfig();
+    const needsSetup = !API_KEY && !config.apiKey;
     return {
-      content: [{ type: "text", text: JSON.stringify(config, null, 2) }],
+      content: [{ type: "text", text: JSON.stringify({ ...config, needsSetup }, null, 2) }],
     };
   }
 
@@ -292,6 +324,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     const config = await loadConfig();
+
+    // Check API key is available (may have been loaded from config)
+    if (!API_KEY) {
+      return {
+        content: [{ type: "text", text: JSON.stringify({ success: false, needsSetup: true, message: "No API key configured. Run /tts or call setup_tts with your ElevenLabs API key." }) }],
+        isError: true,
+      };
+    }
 
     // Gatekeeper: check if this category is enabled
     if (!isCategoryEnabled(config, category)) {
