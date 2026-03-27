@@ -1,7 +1,7 @@
 ---
 name: tts
 description: Configure TTS voice mode — first-time setup, toggle modes, set per-category voices, adjust thresholds
-version: 2.1.0
+version: 2.2.0
 ---
 
 # TTS Voice Configuration
@@ -26,6 +26,7 @@ Categories:
   questions    ✓  voice: edward
   status       ✓  voice: daniel
   summaries    ✓  voice: daniel
+  plans        ✓  voice: edward
 
 Default voice: edward
 ```
@@ -114,6 +115,8 @@ When `get_voice_config` returns `needsSetup: true`:
 | Minimal | Task completions, build failures, blocking questions |
 | Ambient | All of minimal + status updates + long-output summaries |
 | Full | Everything — every response gets spoken (summaries for long output) |
+
+**Plans category**: Enabled in Ambient and Full modes. Speaks when presenting or revising a plan.
 
 ## Available Voices
 

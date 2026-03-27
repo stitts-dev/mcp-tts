@@ -22,12 +22,15 @@ You have a `speak` tool via MCP that speaks text aloud using ElevenLabs. The ser
 
 ### When to call speak
 
-**Always call speak** after these events — the server gatekeeps based on config:
+**You MUST call `speak` after every meaningful response.** The server gatekeeps based on config — your job is to always call it. Non-negotiable triggers:
 - Task completions (category: `completions`)
 - Build/test failures (category: `errors`)
 - Blocking questions (category: `questions`)
 - Progress updates, milestone announcements (category: `status`)
+- Plan presentations or revisions (category: `plans`)
 - Any response to the user (category: `summaries` if long, or appropriate category if short)
+
+Do NOT skip speak calls because you think the response is too short or unimportant. The server decides what gets spoken.
 
 ### Plan mode
 
