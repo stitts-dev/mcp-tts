@@ -18,6 +18,7 @@ You have a `speak` tool via MCP that speaks text aloud using ElevenLabs. The ser
 | Asking a blocking question | `questions` |
 | Giving a progress/status update | `status` |
 | Summarizing a long response | `summaries` |
+| Presenting or updating a plan | `plans` |
 
 ### When to call speak
 
@@ -27,6 +28,21 @@ You have a `speak` tool via MCP that speaks text aloud using ElevenLabs. The ser
 - Blocking questions (category: `questions`)
 - Progress updates, milestone announcements (category: `status`)
 - Any response to the user (category: `summaries` if long, or appropriate category if short)
+
+### Plan mode
+
+When presenting a plan (the "Here's my plan" / "Ready to code?" moment), speak a 1-2 sentence summary of the approach with category `plans`. Focus on the *what* and *why* — not file lists or implementation details.
+
+If the plan involves a non-obvious trade-off or key architectural decision, speak that too with category `plans`.
+
+When revising a plan after user feedback, speak what changed with category `plans`.
+
+Examples:
+```
+speak("Plan ready. We'll yield debate text events instead of discarding them, so TTS can voice the coaches' thinking aloud.", category: "plans")
+speak("Key trade-off: reusing the existing ContentDelta event instead of adding a new variant — simpler, no schema changes.", category: "plans")
+speak("Updated the plan — switched from event yielding to a dedicated broadcast channel for better backpressure.", category: "plans")
+```
 
 ### What text to send
 
