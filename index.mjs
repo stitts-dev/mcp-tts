@@ -19,13 +19,12 @@ import { playChunks } from "./audio.mjs";
 // ── Config ──────────────────────────────────────────────────────────────
 
 const API_KEY = process.env.ELEVENLABS_API_KEY;
-const REN_VOICE_ID = process.env.ELEVENLABS_REN_VOICE_ID;
-const VOX_VOICE_ID = process.env.ELEVENLABS_VOX_VOICE_ID || REN_VOICE_ID;
-const MODEL_ID = process.env.ELEVENLABS_MODEL_ID || "eleven_turbo_v2_5";
+const VOICE_ID = process.env.ELEVENLABS_VOICE_ID;
+const MODEL_ID = process.env.ELEVENLABS_MODEL_ID || "eleven_multilingual_v2";
 
-if (!API_KEY || !REN_VOICE_ID) {
+if (!API_KEY || !VOICE_ID) {
   console.error(
-    "mcp-tts: ELEVENLABS_API_KEY and ELEVENLABS_REN_VOICE_ID required as env vars"
+    "mcp-tts: ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID required as env vars"
   );
   process.exit(1);
 }
@@ -71,11 +70,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: "string",
             description: "Text to speak aloud (markdown will be stripped)",
           },
-          voice: {
-            type: "string",
-            enum: ["ren", "vox"],
-            description: "Voice to use (default: ren)",
-          },
         },
         required: ["text"],
       },
@@ -91,7 +85,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     };
   }
 
-  const { text, voice } = request.params.arguments ?? {};
+  const { text } = request.params.arguments ?? {};
 
   if (!text || typeof text !== "string") {
     return {
@@ -107,12 +101,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     };
   }
 
-  const voiceId = voice === "vox" ? VOX_VOICE_ID : REN_VOICE_ID;
-
   try {
     const chunks = await synthesize(cleaned, {
       apiKey: API_KEY,
-      voiceId,
+      voiceId: VOICE_ID,
       modelId: MODEL_ID,
     });
 
@@ -129,11 +121,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       content: [
         {
           type: "text",
-          text: JSON.stringify({
-            success: true,
-            chars: cleaned.length,
-            voice: voice || "ren",
-          }),
+          text: JSON.stringify({ success: true, chars: cleaned.length }),
         },
       ],
     };
@@ -149,11 +137,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 // ── Standalone test mode ────────────────────────────────────────────────
 
 if (process.argv.includes("--test")) {
-  console.log("mcp-tts: test mode — synthesizing 'Hello, I am your coach.'");
+  console.log("mcp-tts: test mode — synthesizing test phrase");
   try {
-    const chunks = await synthesize("Hello, I am your coach.", {
+    const chunks = await synthesize("Task complete. All tests passing.", {
       apiKey: API_KEY,
-      voiceId: REN_VOICE_ID,
+      voiceId: VOICE_ID,
       modelId: MODEL_ID,
     });
     console.log(`mcp-tts: got ${chunks.length} chunks`);
