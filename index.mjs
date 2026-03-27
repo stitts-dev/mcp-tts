@@ -19,7 +19,6 @@ import { playChunks } from "./audio.mjs";
 // ── Config ──────────────────────────────────────────────────────────────
 
 const API_KEY = process.env.ELEVENLABS_API_KEY;
-const DEFAULT_VOICE_ID = process.env.ELEVENLABS_VOICE_ID;
 const MODEL_ID = process.env.ELEVENLABS_MODEL_ID || "eleven_multilingual_v2";
 
 // Voice library — name → ElevenLabs voice ID
@@ -39,10 +38,10 @@ const VOICES = {
   edward:    "goT3UYdM9bhm0n2lmKQx",   // British, Dark, Seductive, Low
 };
 
-if (!API_KEY || !DEFAULT_VOICE_ID) {
-  console.error(
-    "mcp-tts: ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID required as env vars"
-  );
+const DEFAULT_VOICE_ID = process.env.ELEVENLABS_VOICE_ID || VOICES.edward;
+
+if (!API_KEY) {
+  console.error("mcp-tts: ELEVENLABS_API_KEY required as env var");
   process.exit(1);
 }
 
