@@ -19,14 +19,37 @@ import { playChunks } from "./audio.mjs";
 // ── Config ──────────────────────────────────────────────────────────────
 
 const API_KEY = process.env.ELEVENLABS_API_KEY;
-const VOICE_ID = process.env.ELEVENLABS_VOICE_ID;
+const DEFAULT_VOICE_ID = process.env.ELEVENLABS_VOICE_ID;
 const MODEL_ID = process.env.ELEVENLABS_MODEL_ID || "eleven_multilingual_v2";
 
-if (!API_KEY || !VOICE_ID) {
+// Voice library — name → ElevenLabs voice ID
+const VOICES = {
+  daniel:    "onwK4e9ZLuTAKqWW03F9",
+  jessica:   "flHkNRp1BlvT73UL6gyz",  // Jessica Anne Bogart - Eloquent Villain
+  austin:    "Bj9UqZbhQsanLzgalpEG",  // Deep, Raspy and Authentic
+  archer:    "Fahco4VZzobUeiPqni1S",   // Conversational
+  donovan:   "DMyrgzQFny3JI1Y1paM5",   // Articulate, Strong and Deep
+  juniper:   "aMSt68OGf4xUZAnLpTU8",   // Grounded and Professional
+  "mark-casual":  "1SM7GgM6IMuvQlz2BwM3", // Casual, Relaxed and Light
+  "mark-natural": "UgBBYS2sOqTuMpoF3BR0", // Natural Conversations
+  cassidy:   "56AoDkrOh6qfVPDXZ7Pt",   // Crisp, Direct and Clear
+  spuds:     "NOpBlnGInO9m6vDvFkFC",   // Wise and Approachable
+  rob:       "2ajXGJNYBR0iNHpS4VZb",   // Tough & Calloused
+  adam:      "IRHApOXLvnW57QJPQH2P",   // American, Dark and Tough
+  edward:    "goT3UYdM9bhm0n2lmKQx",   // British, Dark, Seductive, Low
+};
+
+if (!API_KEY || !DEFAULT_VOICE_ID) {
   console.error(
     "mcp-tts: ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID required as env vars"
   );
   process.exit(1);
+}
+
+function resolveVoice(name) {
+  if (!name) return DEFAULT_VOICE_ID;
+  const key = name.toLowerCase().trim();
+  return VOICES[key] || DEFAULT_VOICE_ID;
 }
 
 // ── Markdown stripping ──────────────────────────────────────────────────
@@ -70,6 +93,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: "string",
             description: "Text to speak aloud (markdown will be stripped)",
           },
+          voice: {
+            type: "string",
+            enum: Object.keys(VOICES),
+            description: "Voice name (optional, uses default if omitted)",
+          },
         },
         required: ["text"],
       },
@@ -85,7 +113,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     };
   }
 
-  const { text } = request.params.arguments ?? {};
+  const { text, voice } = request.params.arguments ?? {};
 
   if (!text || typeof text !== "string") {
     return {
@@ -101,10 +129,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     };
   }
 
+  const voiceId = resolveVoice(voice);
+
   try {
     const chunks = await synthesize(cleaned, {
       apiKey: API_KEY,
-      voiceId: VOICE_ID,
+      voiceId,
       modelId: MODEL_ID,
     });
 
@@ -121,7 +151,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       content: [
         {
           type: "text",
-          text: JSON.stringify({ success: true, chars: cleaned.length }),
+          text: JSON.stringify({ success: true, chars: cleaned.length, voice: voice || "default" }),
         },
       ],
     };
@@ -141,7 +171,7 @@ if (process.argv.includes("--test")) {
   try {
     const chunks = await synthesize("Task complete. All tests passing.", {
       apiKey: API_KEY,
-      voiceId: VOICE_ID,
+      voiceId: DEFAULT_VOICE_ID,
       modelId: MODEL_ID,
     });
     console.log(`mcp-tts: got ${chunks.length} chunks`);
