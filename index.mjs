@@ -3,10 +3,15 @@
 /**
  * MCP TTS Server — gives Claude Code a voice via ElevenLabs.
  *
- * Single tool: speak(text, voice?)
- * Strips markdown, synthesizes via WebSocket, plays via afplay.
+ * Tools:
+ *   speak(text, voice?, category?)  — speak text aloud, config-aware
+ *   get_voice_config()              — read current voice config
+ *   set_voice_config(config)        — write full voice config
  */
 
+import { readFile, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -18,10 +23,14 @@ import { playChunks } from "./audio.mjs";
 
 // ── Config ──────────────────────────────────────────────────────────────
 
+const __dirname = dirname(fileURLToPath(import.meta.url));
+// Store config in ~/.claude/ so it persists across npx/marketplace reinstalls
+const CONFIG_PATH = join(process.env.HOME || process.env.USERPROFILE || __dirname, ".claude", "voice-config.json");
+
 const API_KEY = process.env.ELEVENLABS_API_KEY;
 const MODEL_ID = process.env.ELEVENLABS_MODEL_ID || "eleven_multilingual_v2";
 
-// Voice library — name → ElevenLabs voice ID
+// Voice library — name -> ElevenLabs voice ID
 const VOICES = {
   daniel:    "onwK4e9ZLuTAKqWW03F9",
   jessica:   "flHkNRp1BlvT73UL6gyz",  // Jessica Anne Bogart - Eloquent Villain
@@ -38,23 +47,118 @@ const VOICES = {
   edward:    "goT3UYdM9bhm0n2lmKQx",   // British, Dark, Seductive, Low
 };
 
-const DEFAULT_VOICE_ID = process.env.ELEVENLABS_VOICE_ID || VOICES.edward;
+const VALID_MODES = ["off", "minimal", "ambient", "full"];
+const VALID_CATEGORIES = ["completions", "errors", "questions", "status", "summaries"];
+
+const DEFAULT_CONFIG = {
+  version: 1,
+  mode: "minimal",
+  categories: { completions: true, errors: true, questions: true, status: false, summaries: false },
+  voices: { default: "edward" },
+  longOutputThreshold: 500,
+  enabled: true,
+};
+
+const DEFAULT_VOICE_ID = process.env.ELEVENLABS_VOICE_ID || VOICES[DEFAULT_CONFIG.voices.default];
 
 if (!API_KEY) {
   console.error("mcp-tts: ELEVENLABS_API_KEY required as env var");
   process.exit(1);
 }
 
-function resolveVoice(name) {
-  if (!name) return DEFAULT_VOICE_ID;
-  const key = name.toLowerCase().trim();
-  return VOICES[key] || DEFAULT_VOICE_ID;
+// ── Voice config ────────────────────────────────────────────────────────
+
+let _cachedConfig = null;
+
+async function loadConfig() {
+  if (_cachedConfig) return _cachedConfig;
+  try {
+    const raw = await readFile(CONFIG_PATH, "utf-8");
+    _cachedConfig = { ...DEFAULT_CONFIG, ...JSON.parse(raw) };
+  } catch {
+    _cachedConfig = { ...DEFAULT_CONFIG };
+  }
+  return _cachedConfig;
+}
+
+async function saveConfig(config) {
+  await writeFile(CONFIG_PATH, JSON.stringify(config, null, 2) + "\n", "utf-8");
+  _cachedConfig = config;
+}
+
+function lookupVoice(name) {
+  return name ? VOICES[name.toLowerCase().trim()] : undefined;
+}
+
+function resolveVoiceForCategory(config, category, explicitVoice) {
+  return lookupVoice(explicitVoice)
+    || lookupVoice(config.voices?.[category])
+    || lookupVoice(config.voices?.default)
+    || DEFAULT_VOICE_ID;
+}
+
+function isCategoryEnabled(config, category) {
+  if (!config.enabled) return false;
+  if (config.mode === "off") return false;
+  if (!category) return config.enabled; // no category = legacy call, allow if enabled
+  return config.categories?.[category] ?? false;
+}
+
+// ── Rate limiting ───────────────────────────────────────────────────────
+
+let lastSpeakTime = 0;
+let queuedSpeak = null;
+let queueTimer = null;
+const COOLDOWN_MS = 3000;
+
+async function rateLimitedSpeak(cleaned, voiceId) {
+  const now = Date.now();
+  const elapsed = now - lastSpeakTime;
+
+  if (elapsed >= COOLDOWN_MS) {
+    lastSpeakTime = Date.now();
+    await doSpeak(cleaned, voiceId);
+    return { spoken: true };
+  }
+
+  // Queue this request (latest wins — settle replaced promise so it doesn't hang)
+  return new Promise((resolve, reject) => {
+    if (queueTimer) clearTimeout(queueTimer);
+    if (queuedSpeak) {
+      queuedSpeak.resolve({ skipped: true, reason: "replaced by newer speak request" });
+    }
+    queuedSpeak = { cleaned, voiceId, resolve, reject };
+    const wait = COOLDOWN_MS - elapsed;
+    queueTimer = setTimeout(async () => {
+      const { cleaned: c, voiceId: v, resolve: res, reject: rej } = queuedSpeak;
+      queuedSpeak = null;
+      queueTimer = null;
+      lastSpeakTime = Date.now();
+      try {
+        await doSpeak(c, v);
+        res({ spoken: true });
+      } catch (err) {
+        rej(err);
+      }
+    }, wait);
+  });
+}
+
+async function doSpeak(cleaned, voiceId) {
+  const chunks = await synthesize(cleaned, {
+    apiKey: API_KEY,
+    voiceId,
+    modelId: MODEL_ID,
+  });
+  if (chunks.length === 0) throw new Error("No audio received from ElevenLabs");
+  await playChunks(chunks);
 }
 
 // ── Markdown stripping ──────────────────────────────────────────────────
 
 function stripMarkdown(text) {
   if (!text) return "";
+  if (!/[`#*_\[\]<\->]/.test(text)) return text.trim();
   let r = text;
   r = r.replace(/```[\s\S]*?```/g, "");       // code blocks
   r = r.replace(/`([^`]*)`/g, "$1");           // inline code
@@ -75,7 +179,7 @@ function stripMarkdown(text) {
 // ── MCP Server ──────────────────────────────────────────────────────────
 
 const server = new Server(
-  { name: "mcp-tts", version: "1.0.0" },
+  { name: "mcp-tts", version: "2.0.0" },
   { capabilities: { tools: {} } }
 );
 
@@ -84,7 +188,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "speak",
       description:
-        "Speak text aloud using ElevenLabs TTS. Use for brief verbal summaries of completed work, test results, or key findings. Keep text concise (1-2 sentences). Don't speak code.",
+        "Speak text aloud using ElevenLabs TTS. Always include a category so the server can apply voice config rules. The server decides whether to actually speak based on the current mode and category settings.",
       inputSchema: {
         type: "object",
         properties: {
@@ -95,72 +199,164 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           voice: {
             type: "string",
             enum: Object.keys(VOICES),
-            description: "Voice name (optional, uses default if omitted)",
+            description: "Voice override (optional — server auto-selects from config based on category)",
+          },
+          category: {
+            type: "string",
+            enum: VALID_CATEGORIES,
+            description: "Response category: completions, errors, questions, status, or summaries",
           },
         },
         required: ["text"],
+      },
+    },
+    {
+      name: "get_voice_config",
+      description: "Read the current TTS voice configuration including mode, category toggles, voice mappings, and threshold.",
+      inputSchema: {
+        type: "object",
+        properties: {},
+      },
+    },
+    {
+      name: "set_voice_config",
+      description: "Write a complete TTS voice configuration. Replaces the entire config (no partial merge — read first, modify, then write back).",
+      inputSchema: {
+        type: "object",
+        properties: {
+          config: {
+            type: "object",
+            description: "Full voice config object with version, mode, categories, voices, longOutputThreshold, and enabled fields",
+          },
+        },
+        required: ["config"],
       },
     },
   ],
 }));
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  if (request.params.name !== "speak") {
+  const toolName = request.params.name;
+
+  // ── get_voice_config ──
+  if (toolName === "get_voice_config") {
+    const config = await loadConfig();
     return {
-      content: [{ type: "text", text: `Unknown tool: ${request.params.name}` }],
-      isError: true,
+      content: [{ type: "text", text: JSON.stringify(config, null, 2) }],
     };
   }
 
-  const { text, voice } = request.params.arguments ?? {};
-
-  if (!text || typeof text !== "string") {
-    return {
-      content: [{ type: "text", text: "Missing required parameter: text" }],
-      isError: true,
-    };
-  }
-
-  const cleaned = stripMarkdown(text);
-  if (!cleaned) {
-    return {
-      content: [{ type: "text", text: "Nothing to speak after stripping markdown" }],
-    };
-  }
-
-  const voiceId = resolveVoice(voice);
-
-  try {
-    const chunks = await synthesize(cleaned, {
-      apiKey: API_KEY,
-      voiceId,
-      modelId: MODEL_ID,
-    });
-
-    if (chunks.length === 0) {
+  // ── set_voice_config ──
+  if (toolName === "set_voice_config") {
+    const { config } = request.params.arguments ?? {};
+    if (!config || typeof config !== "object") {
       return {
-        content: [{ type: "text", text: "No audio received from ElevenLabs" }],
+        content: [{ type: "text", text: "Missing required parameter: config (object)" }],
+        isError: true,
+      };
+    }
+    // Validate mode
+    if (config.mode && !VALID_MODES.includes(config.mode)) {
+      return {
+        content: [{ type: "text", text: `Invalid mode: ${config.mode}. Must be one of: ${VALID_MODES.join(", ")}` }],
+        isError: true,
+      };
+    }
+    // Validate voice names
+    if (config.voices) {
+      for (const [key, name] of Object.entries(config.voices)) {
+        if (name && !VOICES[name.toLowerCase().trim()]) {
+          return {
+            content: [{ type: "text", text: `Invalid voice "${name}" for key "${key}". Valid voices: ${Object.keys(VOICES).join(", ")}` }],
+            isError: true,
+          };
+        }
+      }
+    }
+    const finalConfig = { ...DEFAULT_CONFIG, ...config, version: 1 };
+    await saveConfig(finalConfig);
+    return {
+      content: [{ type: "text", text: JSON.stringify({ success: true, config: finalConfig }, null, 2) }],
+    };
+  }
+
+  // ── speak ──
+  if (toolName === "speak") {
+    const { text, voice, category } = request.params.arguments ?? {};
+
+    if (!text || typeof text !== "string") {
+      return {
+        content: [{ type: "text", text: "Missing required parameter: text" }],
         isError: true,
       };
     }
 
-    await playChunks(chunks);
+    const config = await loadConfig();
 
-    return {
-      content: [
-        {
+    // Gatekeeper: check if this category is enabled
+    if (!isCategoryEnabled(config, category)) {
+      const reason = !config.enabled
+        ? "TTS is disabled (enabled: false)"
+        : config.mode === "off"
+          ? "TTS mode is off"
+          : `category '${category}' is disabled in '${config.mode}' mode`;
+      return {
+        content: [{
           type: "text",
-          text: JSON.stringify({ success: true, chars: cleaned.length, voice: voice || "default" }),
-        },
-      ],
-    };
-  } catch (err) {
-    console.error("mcp-tts: speak failed:", err.message);
-    return {
-      content: [{ type: "text", text: `TTS error: ${err.message}` }],
-      isError: true,
-    };
+          text: JSON.stringify({ success: false, skipped: true, reason }),
+        }],
+      };
+    }
+
+    const cleaned = stripMarkdown(text);
+    if (!cleaned) {
+      return {
+        content: [{ type: "text", text: "Nothing to speak after stripping markdown" }],
+      };
+    }
+
+    // Threshold check: if text is too long and category is not "summaries", reject
+    if (category && category !== "summaries" && cleaned.length > config.longOutputThreshold) {
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            success: false,
+            skipped: true,
+            reason: `text exceeds threshold (${cleaned.length} > ${config.longOutputThreshold || 500} chars). Use category 'summaries' with a shorter summary.`,
+          }),
+        }],
+      };
+    }
+
+    const voiceId = resolveVoiceForCategory(config, category, voice);
+
+    try {
+      await rateLimitedSpeak(cleaned, voiceId);
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            success: true,
+            chars: cleaned.length,
+            voice: voice || config.voices?.[category] || config.voices?.default || "default",
+            category: category || "uncategorized",
+          }),
+        }],
+      };
+    } catch (err) {
+      console.error("mcp-tts: speak failed:", err.message);
+      return {
+        content: [{ type: "text", text: `TTS error: ${err.message}` }],
+        isError: true,
+      };
+    }
   }
+
+  return {
+    content: [{ type: "text", text: `Unknown tool: ${toolName}` }],
+    isError: true,
+  };
 });
 
 // ── Standalone test mode ────────────────────────────────────────────────
@@ -176,6 +372,10 @@ if (process.argv.includes("--test")) {
     console.log(`mcp-tts: got ${chunks.length} chunks`);
     await playChunks(chunks);
     console.log("mcp-tts: test complete");
+
+    // Also test config read/write
+    const config = await loadConfig();
+    console.log(`mcp-tts: config loaded — mode: ${config.mode}, enabled: ${config.enabled}`);
   } catch (err) {
     console.error("mcp-tts: test failed:", err.message);
     process.exit(1);
