@@ -1,8 +1,8 @@
 {
   "name": "mcp-tts",
-  "version": "2.2.0",
+  "version": "3.1.0",
   "type": "module",
-  "description": "MCP server for ElevenLabs TTS — gives Claude Code a voice",
+  "description": "MCP server for TTS — gives Claude Code a voice via ElevenLabs or local Piper",
   "main": "index.mjs",
   "bin": {
     "mcp-tts": "index.mjs"

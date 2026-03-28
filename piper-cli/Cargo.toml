@@ -1,0 +1,10 @@
+[package]
+name = "piper-cli"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+piper-rs = { git = "https://github.com/thewh1teagle/piper-rs", rev = "616e682" }
+clap = { version = "4", features = ["derive"] }
+hound = "3.5"
+ureq = "2"

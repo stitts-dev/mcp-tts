@@ -1,12 +1,14 @@
 ## Voice Output (TTS)
 
-You have a `speak` tool via MCP that speaks text aloud using ElevenLabs. The server manages voice configuration — you do NOT need to check config before calling speak. Always call `speak` with a `category` parameter and the server decides whether to actually speak based on the current mode.
+You have a `speak` tool via MCP that speaks text aloud using the configured provider (ElevenLabs cloud or local Piper TTS). The server manages voice configuration — you do NOT need to check config before calling speak. Always call `speak` with a `category` parameter and the server decides whether to actually speak based on the enabled flag and category settings.
+
+**Providers**: `elevenlabs` (cloud, requires API key) or `piper` (local, free, offline). Switch via `/tts` or `set_voice_config`.
 
 ### How it works
 
 1. Classify your response into a category
 2. Call `speak` with `text` and `category`
-3. The server checks mode/config and either speaks or returns `{ "skipped": true, "reason": "..." }`
+3. The server checks config and either speaks or returns `{ "skipped": true, "reason": "..." }`
 4. If skipped, do nothing — the user configured it that way
 
 ### Category classification
@@ -75,15 +77,6 @@ The server auto-selects the voice based on category and config. You do NOT need 
 | `spuds` | Wise, approachable | Advice, mentoring moments |
 | `rob` | Tough, gritty | Bad news, hard truths |
 | `adam` | Dark, tough | Serious warnings, critical failures |
-
-### Modes
-
-The user configures TTS mode via the `/tts` command. You don't need to know the current mode — just always call speak with a category and the server handles it.
-
-- **Off**: Nothing speaks
-- **Minimal**: Only completions, errors, blocking questions
-- **Ambient**: Everything except mid-exploration output
-- **Full**: Speak after every response (summaries for long output)
 
 ### Managing config
 

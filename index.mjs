@@ -19,7 +19,8 @@ import {
   CallToolRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { synthesize } from "./elevenlabs.mjs";
-import { playChunks } from "./audio.mjs";
+import { synthesizeLocal, ensureModel } from "./piper.mjs";
+import { playChunks, playFile } from "./audio.mjs";
 
 // ── Config ──────────────────────────────────────────────────────────────
 
@@ -47,14 +48,17 @@ const VOICES = {
   edward:    "goT3UYdM9bhm0n2lmKQx",   // British, Dark, Seductive, Low
 };
 
-const VALID_MODES = ["off", "minimal", "ambient", "full"];
 const VALID_CATEGORIES = ["completions", "errors", "questions", "status", "summaries"];
+const VALID_PROVIDERS = ["elevenlabs", "piper"];
+const PIPER_VOICES = ["en_US-l2arctic-medium", "en_US-norman-medium", "en_US-kusal-medium"];
 
 const DEFAULT_CONFIG = {
   version: 1,
-  mode: "minimal",
+  provider: "elevenlabs",
   categories: { completions: true, errors: true, questions: true, status: false, summaries: false },
   voices: { default: "edward" },
+  piperVoice: "en_US-norman-medium",
+  piperSpeed: 1.0,
   longOutputThreshold: 500,
   enabled: true,
 };
@@ -98,7 +102,6 @@ function resolveVoiceForCategory(config, category, explicitVoice) {
 
 function isCategoryEnabled(config, category) {
   if (!config.enabled) return false;
-  if (config.mode === "off") return false;
   if (!category) return config.enabled; // no category = legacy call, allow if enabled
   return config.categories?.[category] ?? false;
 }
@@ -144,6 +147,17 @@ async function rateLimitedSpeak(cleaned, voiceId) {
 }
 
 async function doSpeak(cleaned, voiceId) {
+  const config = _cachedConfig || await loadConfig();
+
+  if (config.provider === "piper") {
+    const wavPath = await synthesizeLocal(cleaned, {
+      voice: config.piperVoice || "en_US-norman-medium",
+      speed: config.piperSpeed || 1.0,
+    });
+    await playFile(wavPath);
+    return;
+  }
+
   const chunks = await synthesize(cleaned, {
     apiKey: API_KEY,
     voiceId,
@@ -178,7 +192,7 @@ function stripMarkdown(text) {
 // ── MCP Server ──────────────────────────────────────────────────────────
 
 const server = new Server(
-  { name: "mcp-tts", version: "2.0.0" },
+  { name: "mcp-tts", version: "3.1.0" },
   { capabilities: { tools: {} } }
 );
 
@@ -187,7 +201,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "speak",
       description:
-        "Speak text aloud using ElevenLabs TTS. Always include a category so the server can apply voice config rules. The server decides whether to actually speak based on the current mode and category settings.",
+        "Speak text aloud using the configured TTS provider (ElevenLabs or local Piper). Always include a category so the server can apply voice config rules. The server decides whether to actually speak based on the enabled flag and category settings.",
       inputSchema: {
         type: "object",
         properties: {
@@ -211,7 +225,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "get_voice_config",
-      description: "Read the current TTS voice configuration including mode, category toggles, voice mappings, and threshold.",
+      description: "Read the current TTS voice configuration including provider, category toggles, voice mappings, and threshold.",
       inputSchema: {
         type: "object",
         properties: {},
@@ -225,7 +239,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: {
           config: {
             type: "object",
-            description: "Full voice config object with version, mode, categories, voices, longOutputThreshold, and enabled fields",
+            description: "Full voice config object with version, provider, categories, voices, longOutputThreshold, and enabled fields",
           },
         },
         required: ["config"],
@@ -272,9 +286,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   // ── get_voice_config ──
   if (toolName === "get_voice_config") {
     const config = await loadConfig();
-    const needsSetup = !API_KEY && !config.apiKey;
+    const needsSetup = config.provider !== "piper" && !API_KEY && !config.apiKey;
     return {
-      content: [{ type: "text", text: JSON.stringify({ ...config, needsSetup }, null, 2) }],
+      content: [{ type: "text", text: JSON.stringify({ ...config, needsSetup, availablePiperVoices: PIPER_VOICES }, null, 2) }],
     };
   }
 
@@ -287,10 +301,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         isError: true,
       };
     }
-    // Validate mode
-    if (config.mode && !VALID_MODES.includes(config.mode)) {
+    // Validate provider
+    if (config.provider && !VALID_PROVIDERS.includes(config.provider)) {
       return {
-        content: [{ type: "text", text: `Invalid mode: ${config.mode}. Must be one of: ${VALID_MODES.join(", ")}` }],
+        content: [{ type: "text", text: `Invalid provider: ${config.provider}. Must be one of: ${VALID_PROVIDERS.join(", ")}` }],
+        isError: true,
+      };
+    }
+    // Validate piper voice
+    if (config.piperVoice && !PIPER_VOICES.includes(config.piperVoice)) {
+      return {
+        content: [{ type: "text", text: `Invalid piper voice: ${config.piperVoice}. Must be one of: ${PIPER_VOICES.join(", ")}` }],
         isError: true,
       };
     }
@@ -325,10 +346,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     const config = await loadConfig();
 
-    // Check API key is available (may have been loaded from config)
-    if (!API_KEY) {
+    // Check API key is available (only needed for ElevenLabs)
+    if (config.provider !== "piper" && !API_KEY) {
       return {
-        content: [{ type: "text", text: JSON.stringify({ success: false, needsSetup: true, message: "No API key configured. Run /tts or call setup_tts with your ElevenLabs API key." }) }],
+        content: [{ type: "text", text: JSON.stringify({ success: false, needsSetup: true, message: "No API key configured. Run /tts or call setup_tts with your ElevenLabs API key, or switch provider to 'piper' for local TTS." }) }],
         isError: true,
       };
     }
@@ -337,9 +358,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (!isCategoryEnabled(config, category)) {
       const reason = !config.enabled
         ? "TTS is disabled (enabled: false)"
-        : config.mode === "off"
-          ? "TTS mode is off"
-          : `category '${category}' is disabled in '${config.mode}' mode`;
+        : `category '${category}' is disabled`;
       return {
         content: [{
           type: "text",
@@ -404,18 +423,26 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 if (process.argv.includes("--test")) {
   console.log("mcp-tts: test mode — synthesizing test phrase");
   try {
-    const chunks = await synthesize("Task complete. All tests passing.", {
-      apiKey: API_KEY,
-      voiceId: DEFAULT_VOICE_ID,
-      modelId: MODEL_ID,
-    });
-    console.log(`mcp-tts: got ${chunks.length} chunks`);
-    await playChunks(chunks);
-    console.log("mcp-tts: test complete");
-
-    // Also test config read/write
     const config = await loadConfig();
-    console.log(`mcp-tts: config loaded — mode: ${config.mode}, enabled: ${config.enabled}`);
+    console.log(`mcp-tts: config loaded — provider: ${config.provider}, enabled: ${config.enabled}`);
+
+    if (config.provider === "piper") {
+      const wavPath = await synthesizeLocal("Task complete. All tests passing.", {
+        voice: config.piperVoice,
+        speed: config.piperSpeed,
+      });
+      console.log(`mcp-tts: piper synthesized to ${wavPath}`);
+      await playFile(wavPath);
+    } else {
+      const chunks = await synthesize("Task complete. All tests passing.", {
+        apiKey: API_KEY,
+        voiceId: DEFAULT_VOICE_ID,
+        modelId: MODEL_ID,
+      });
+      console.log(`mcp-tts: got ${chunks.length} chunks`);
+      await playChunks(chunks);
+    }
+    console.log("mcp-tts: test complete");
   } catch (err) {
     console.error("mcp-tts: test failed:", err.message);
     process.exit(1);
@@ -425,4 +452,10 @@ if (process.argv.includes("--test")) {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error("mcp-tts: server running on stdio");
+
+  // Preload piper model in background if provider is piper
+  const startupConfig = await loadConfig();
+  if (startupConfig.provider === "piper") {
+    ensureModel(startupConfig.piperVoice || "en_US-norman-medium");
+  }
 }
