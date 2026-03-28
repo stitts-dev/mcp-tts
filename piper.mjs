@@ -1,25 +1,41 @@
 import { execFile } from "node:child_process";
-import { tmpdir } from "node:os";
+import { tmpdir, homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { access, constants } from "node:fs/promises";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const home = homedir();
 
-const BINARY_PATHS = [
-  join(__dirname, "piper-cli", "target", "release", "piper-cli"),
-  join(__dirname, "piper-cli", "target", "debug", "piper-cli"),
-];
+/**
+ * Build the list of candidate binary paths.
+ * Exported for testing — not intended for external use.
+ */
+export function buildBinaryPaths(moduleDir = __dirname, homeDir = home) {
+  return [
+    join(moduleDir, "piper-cli", "target", "release", "piper-cli"),
+    join(moduleDir, "piper-cli", "target", "debug", "piper-cli"),
+    join(homeDir, ".claude", "mcp-tts", "piper-cli", "target", "release", "piper-cli"),
+    join(homeDir, ".claude", "mcp-tts", "piper-cli", "target", "debug", "piper-cli"),
+  ];
+}
 
-async function findBinary() {
-  for (const p of BINARY_PATHS) {
+const BINARY_PATHS = buildBinaryPaths();
+
+/**
+ * Find the piper-cli binary by checking known paths, then falling back to PATH.
+ * Exported for testing.
+ */
+export async function findBinary(paths = BINARY_PATHS) {
+  for (const p of paths) {
     try {
       await access(p, constants.X_OK);
       return p;
     } catch {}
   }
-  // Fall back to PATH
+  // Fall back to PATH — if not found, execFile will throw ENOENT
+  // with a clear error from synthesizeLocal
   return "piper-cli";
 }
 
@@ -50,7 +66,12 @@ export async function synthesizeLocal(text, { voice = "en_US-norman-medium", spe
       ["--voice", voice, "--output", outFile, "--speed", String(speed)],
       { timeout: 30_000 },
       (err) => {
-        if (err) reject(new Error(`piper-cli failed: ${err.message}`));
+        if (err) {
+          const hint = err.code === "ENOENT"
+            ? ". piper-cli not found — run: cd ~/.claude/mcp-tts/piper-cli && cargo build --release"
+            : "";
+          reject(new Error(`piper-cli failed: ${err.message}${hint}`));
+        }
         else resolve(outFile);
       }
     );

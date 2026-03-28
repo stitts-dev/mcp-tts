@@ -1,11 +1,14 @@
 {
   "name": "mcp-tts",
-  "version": "3.1.0",
+  "version": "3.2.0",
   "type": "module",
   "description": "MCP server for TTS — gives Claude Code a voice via ElevenLabs or local Piper",
   "main": "index.mjs",
   "bin": {
     "mcp-tts": "index.mjs"
+  },
+  "scripts": {
+    "test": "node --test *.test.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",

@@ -192,7 +192,7 @@ function stripMarkdown(text) {
 // ── MCP Server ──────────────────────────────────────────────────────────
 
 const server = new Server(
-  { name: "mcp-tts", version: "3.1.0" },
+  { name: "mcp-tts", version: "3.2.0" },
   { capabilities: { tools: {} } }
 );
 

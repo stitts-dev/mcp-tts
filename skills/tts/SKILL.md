@@ -1,7 +1,7 @@
 ---
 name: tts
 description: Configure TTS voice — first-time setup, toggle categories, set provider/voices, adjust thresholds
-version: 3.1.0
+version: 3.2.0
 ---
 
 # TTS Voice Configuration
