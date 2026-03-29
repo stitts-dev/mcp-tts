@@ -24,7 +24,9 @@ You have a `speak` tool via MCP that speaks text aloud using the configured prov
 
 ### When to call speak
 
-**You MUST call `speak` after every meaningful response.** The server gatekeeps based on config — your job is to always call it. Non-negotiable triggers:
+**Subagents must NOT call `speak`** — only the main/parent session speaks. This prevents overlapping audio from concurrent agents.
+
+**You MUST call `speak` after every meaningful response** (main session only). The server gatekeeps based on config — your job is to always call it. Non-negotiable triggers:
 - Task completions (category: `completions`)
 - Build/test failures (category: `errors`)
 - Blocking questions (category: `questions`)

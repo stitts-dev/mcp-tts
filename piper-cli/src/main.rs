@@ -23,6 +23,14 @@ struct Args {
     #[arg(long, default_value = "1.0")]
     speed: f32,
 
+    /// Noise scale — phoneme variation/expressiveness (0.0-1.0, default 0.667)
+    #[arg(long)]
+    noise_scale: Option<f32>,
+
+    /// Noise W — phoneme duration variation (0.0-1.0, default 0.8)
+    #[arg(long)]
+    noise_w: Option<f32>,
+
     /// Only download the voice model, don't synthesize
     #[arg(long)]
     download_only: bool,
@@ -49,6 +57,21 @@ const VOICES: &[VoiceModel] = &[
         name: "en_US-kusal-medium",
         onnx_path: "en/en_US/kusal/medium/en_US-kusal-medium.onnx",
         config_path: "en/en_US/kusal/medium/en_US-kusal-medium.onnx.json",
+    },
+    VoiceModel {
+        name: "en_US-lessac-high",
+        onnx_path: "en/en_US/lessac/high/en_US-lessac-high.onnx",
+        config_path: "en/en_US/lessac/high/en_US-lessac-high.onnx.json",
+    },
+    VoiceModel {
+        name: "en_US-ryan-high",
+        onnx_path: "en/en_US/ryan/high/en_US-ryan-high.onnx",
+        config_path: "en/en_US/ryan/high/en_US-ryan-high.onnx.json",
+    },
+    VoiceModel {
+        name: "en_US-ljspeech-high",
+        onnx_path: "en/en_US/ljspeech/high/en_US-ljspeech-high.onnx",
+        config_path: "en/en_US/ljspeech/high/en_US-ljspeech-high.onnx.json",
     },
 ];
 
@@ -145,7 +168,7 @@ fn main() {
     };
 
     let (samples, sample_rate) = model
-        .create(text, false, None, length_scale, None, None)
+        .create(text, false, None, length_scale, args.noise_scale, args.noise_w)
         .unwrap_or_else(|e| {
             eprintln!("piper-cli: synthesis failed: {e}");
             std::process::exit(1);

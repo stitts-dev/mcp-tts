@@ -9,7 +9,8 @@
  *   set_voice_config(config)        — write full voice config
  */
 
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile, rm } from "node:fs/promises";
+import { mkdirSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -50,7 +51,10 @@ const VOICES = {
 
 const VALID_CATEGORIES = ["completions", "errors", "questions", "status", "summaries"];
 const VALID_PROVIDERS = ["elevenlabs", "piper"];
-const PIPER_VOICES = ["en_US-l2arctic-medium", "en_US-norman-medium", "en_US-kusal-medium"];
+const PIPER_VOICES = [
+  "en_US-l2arctic-medium", "en_US-norman-medium", "en_US-kusal-medium",
+  "en_US-lessac-high", "en_US-ryan-high", "en_US-ljspeech-high",
+];
 
 const DEFAULT_CONFIG = {
   version: 1,
@@ -106,6 +110,41 @@ function isCategoryEnabled(config, category) {
   return config.categories?.[category] ?? false;
 }
 
+// ── Cross-process lock (prevents overlapping audio from multiple MCP instances) ─
+
+const LOCK_PATH = join(process.env.TMPDIR || "/tmp", "mcp-tts.lock");
+const LOCK_TIMEOUT_MS = 30_000;
+const LOCK_POLL_MS = 200;
+
+async function withAudioLock(fn) {
+  const deadline = Date.now() + LOCK_TIMEOUT_MS;
+  while (true) {
+    try {
+      mkdirSync(LOCK_PATH);
+      break; // acquired
+    } catch (err) {
+      if (err.code !== "EEXIST") throw err;
+      if (Date.now() >= deadline) {
+        // Stale lock safety: remove locks older than LOCK_TIMEOUT_MS
+        try {
+          const { mtimeMs } = statSync(LOCK_PATH);
+          if (Date.now() - mtimeMs > LOCK_TIMEOUT_MS) {
+            await rm(LOCK_PATH, { recursive: true, force: true });
+            continue;
+          }
+        } catch { /* lock disappeared, retry */ continue; }
+        return { skipped: true, reason: "queue timeout — another speak held the lock too long" };
+      }
+      await new Promise(r => setTimeout(r, LOCK_POLL_MS));
+    }
+  }
+  try {
+    return await fn();
+  } finally {
+    await rm(LOCK_PATH, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 // ── Rate limiting ───────────────────────────────────────────────────────
 
 let lastSpeakTime = 0;
@@ -119,7 +158,8 @@ async function rateLimitedSpeak(cleaned, voiceId) {
 
   if (elapsed >= COOLDOWN_MS) {
     lastSpeakTime = Date.now();
-    await doSpeak(cleaned, voiceId);
+    const result = await doSpeak(cleaned, voiceId);
+    if (result?.skipped) return result;
     return { spoken: true };
   }
 
@@ -137,8 +177,8 @@ async function rateLimitedSpeak(cleaned, voiceId) {
       queueTimer = null;
       lastSpeakTime = Date.now();
       try {
-        await doSpeak(c, v);
-        res({ spoken: true });
+        const result = await doSpeak(c, v);
+        res(result?.skipped ? result : { spoken: true });
       } catch (err) {
         rej(err);
       }
@@ -147,24 +187,28 @@ async function rateLimitedSpeak(cleaned, voiceId) {
 }
 
 async function doSpeak(cleaned, voiceId) {
-  const config = _cachedConfig || await loadConfig();
+  return withAudioLock(async () => {
+    const config = _cachedConfig || await loadConfig();
 
-  if (config.provider === "piper") {
-    const wavPath = await synthesizeLocal(cleaned, {
-      voice: config.piperVoice || "en_US-norman-medium",
-      speed: config.piperSpeed || 1.0,
+    if (config.provider === "piper") {
+      const wavPath = await synthesizeLocal(cleaned, {
+        voice: config.piperVoice || "en_US-norman-medium",
+        speed: config.piperSpeed || 1.0,
+        noiseScale: config.piperNoiseScale,
+        noiseW: config.piperNoiseW,
+      });
+      await playFile(wavPath, { polish: true });
+      return;
+    }
+
+    const chunks = await synthesize(cleaned, {
+      apiKey: API_KEY,
+      voiceId,
+      modelId: MODEL_ID,
     });
-    await playFile(wavPath);
-    return;
-  }
-
-  const chunks = await synthesize(cleaned, {
-    apiKey: API_KEY,
-    voiceId,
-    modelId: MODEL_ID,
+    if (chunks.length === 0) throw new Error("No audio received from ElevenLabs");
+    await playChunks(chunks);
   });
-  if (chunks.length === 0) throw new Error("No audio received from ElevenLabs");
-  await playChunks(chunks);
 }
 
 // ── Markdown stripping ──────────────────────────────────────────────────
@@ -192,7 +236,7 @@ function stripMarkdown(text) {
 // ── MCP Server ──────────────────────────────────────────────────────────
 
 const server = new Server(
-  { name: "mcp-tts", version: "3.2.0" },
+  { name: "mcp-tts", version: "3.3.0" },
   { capabilities: { tools: {} } }
 );
 
@@ -391,7 +435,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const voiceId = resolveVoiceForCategory(config, category, voice);
 
     try {
-      await rateLimitedSpeak(cleaned, voiceId);
+      const result = await rateLimitedSpeak(cleaned, voiceId);
+      if (result?.skipped) {
+        return {
+          content: [{ type: "text", text: JSON.stringify({ success: false, skipped: true, reason: result.reason }) }],
+        };
+      }
       return {
         content: [{
           type: "text",
@@ -430,9 +479,11 @@ if (process.argv.includes("--test")) {
       const wavPath = await synthesizeLocal("Task complete. All tests passing.", {
         voice: config.piperVoice,
         speed: config.piperSpeed,
+        noiseScale: config.piperNoiseScale,
+        noiseW: config.piperNoiseW,
       });
       console.log(`mcp-tts: piper synthesized to ${wavPath}`);
-      await playFile(wavPath);
+      await playFile(wavPath, { polish: true });
     } else {
       const chunks = await synthesize("Task complete. All tests passing.", {
         apiKey: API_KEY,

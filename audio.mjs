@@ -11,16 +11,42 @@ import { randomBytes } from "node:crypto";
 /**
  * Play an audio file via afplay, then delete it.
  */
-export async function playFile(filePath) {
+/**
+ * Post-process a WAV file with SoX: upsample to 44.1kHz, lowpass, normalize.
+ * Returns the path to the polished file (or original if sox unavailable).
+ */
+async function polishWav(filePath) {
+  const polished = filePath.replace(/\.wav$/, "-polished.wav");
   try {
     await new Promise((resolve, reject) => {
-      execFile("afplay", [filePath], (err) => {
+      execFile(
+        "sox",
+        [filePath, "-r", "44100", polished, "lowpass", "8000", "gain", "-n", "-1"],
+        { timeout: 10_000 },
+        (err) => {
+          if (err) reject(err);
+          else resolve();
+        }
+      );
+    });
+    await unlink(filePath).catch(() => {});
+    return polished;
+  } catch {
+    return filePath;
+  }
+}
+
+export async function playFile(filePath, { polish = false } = {}) {
+  const target = polish ? await polishWav(filePath) : filePath;
+  try {
+    await new Promise((resolve, reject) => {
+      execFile("afplay", ["-q", "1", target], (err) => {
         if (err) reject(err);
         else resolve();
       });
     });
   } finally {
-    await unlink(filePath).catch(() => {});
+    await unlink(target).catch(() => {});
   }
 }
 

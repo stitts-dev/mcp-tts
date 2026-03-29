@@ -56,14 +56,18 @@ export function ensureModel(voice = "en_US-norman-medium") {
   });
 }
 
-export async function synthesizeLocal(text, { voice = "en_US-norman-medium", speed = 1.0 } = {}) {
+export async function synthesizeLocal(text, { voice = "en_US-norman-medium", speed = 1.0, noiseScale, noiseW } = {}) {
   const binary = await findBinary();
   const outFile = join(tmpdir(), `mcp-tts-piper-${randomBytes(4).toString("hex")}.wav`);
+
+  const args = ["--voice", voice, "--output", outFile, "--speed", String(speed)];
+  if (noiseScale != null) args.push("--noise-scale", String(noiseScale));
+  if (noiseW != null) args.push("--noise-w", String(noiseW));
 
   return new Promise((resolve, reject) => {
     const child = execFile(
       binary,
-      ["--voice", voice, "--output", outFile, "--speed", String(speed)],
+      args,
       { timeout: 30_000 },
       (err) => {
         if (err) {

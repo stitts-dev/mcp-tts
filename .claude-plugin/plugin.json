@@ -1,6 +1,6 @@
 {
   "name": "mcp-tts",
-  "version": "3.2.0",
+  "version": "3.3.0",
   "description": "TTS for Claude Code — gives Claude a voice via ElevenLabs or local Piper",
   "author": {
     "name": "stitts-dev"
